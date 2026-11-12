@@ -1,0 +1,665 @@
+openapi: 3.0.3
+info:
+  title: Policy Management BFF API
+  version: 1.0.0
+  description: |
+    Contract for the ABC APAC Policy Management BFF service.
+
+    Policies are filtered using the intersection (AND) of all supplied filters.
+    Search matches a case-insensitive substring in policyNumber,
+    policyholderName, or underwriter. Date bounds apply inclusively to
+    effectiveDate. Pagination is zero-based. List ordering defaults to
+    createdAt descending, with id ascending as a stable tie-breaker.
+
+    Summary values are calculated over the policies matched by its supplied
+    filters. Premium values are grouped by both line of business and currency;
+    no currency conversion is performed. expiringSoonCount is the count of
+    matching policies expiring from the current date through 30 calendar days
+    later, inclusive.
+servers:
+  - url: /api/v1
+    description: Policy API
+tags:
+  - name: Policies
+    description: Policy search, detail, bulk review flagging, and summary
+paths:
+  /policies:
+    get:
+      tags: [Policies]
+      operationId: listPolicies
+      summary: List policies
+      description: |
+        Returns a filtered, sorted page of policies. Filters are combined
+        using AND. `search` matches a case-insensitive substring in
+        policyNumber, policyholderName, or underwriter.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Status'
+        - $ref: '#/components/parameters/LineOfBusiness'
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/EffectiveDateFrom'
+        - $ref: '#/components/parameters/EffectiveDateTo'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200':
+          description: A page of matching policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyPage'
+              example:
+                content:
+                  - id: 6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+                    policyNumber: POL-000241
+                    policyholderName: Lim Wei Ming
+                    lineOfBusiness: Property
+                    status: Active
+                    premiumAmount: 125000.00
+                    currency: SGD
+                    effectiveDate: '2026-02-01'
+                    expiryDate: '2027-01-31'
+                    region: Singapore
+                    underwriter: Aisha Tan
+                    flaggedForReview: false
+                    createdAt: '2026-01-10T02:15:00Z'
+                    updatedAt: '2026-01-10T02:15:00Z'
+                page: 0
+                size: 20
+                totalElements: 1
+                totalPages: 1
+                sort:
+                  field: createdAt
+                  direction: desc
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /policies/{id}:
+    get:
+      tags: [Policies]
+      operationId: getPolicyById
+      summary: Get a policy by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Policy UUID.
+          schema:
+            type: string
+            format: uuid
+          example: 6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+      responses:
+        '200':
+          description: The requested policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+              example:
+                id: 6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+                policyNumber: POL-000241
+                policyholderName: Lim Wei Ming
+                lineOfBusiness: Property
+                status: Active
+                premiumAmount: 125000.00
+                currency: SGD
+                effectiveDate: '2026-02-01'
+                expiryDate: '2027-01-31'
+                region: Singapore
+                underwriter: Aisha Tan
+                flaggedForReview: false
+                createdAt: '2026-01-10T02:15:00Z'
+                updatedAt: '2026-01-10T02:15:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/PolicyNotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /policies/flag:
+    patch:
+      tags: [Policies]
+      operationId: flagPoliciesForReview
+      summary: Bulk flag policies for review
+      description: |
+        Flags all requested policies in one transaction. If any ID is
+        duplicated, the whole request is rejected with 400. If any ID does
+        not exist, the whole request is rejected with 404. Neither failure
+        changes any policy. Policies already flagged are successful no-ops,
+        making repeated requests idempotent. An empty policyIds array is a
+        valid no-op and returns a successful response with zero counts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagPoliciesRequest'
+            example:
+              policyIds:
+                - 6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+                - f4e3f09d-3783-49db-80ee-c5f36da8bf41
+      responses:
+        '200':
+          description: All requested IDs exist; newly flagged and already flagged IDs are reported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlagPoliciesResponse'
+              example:
+                requestedCount: 2
+                updatedCount: 1
+                alreadyFlaggedCount: 1
+                updatedIds:
+                  - 6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+                alreadyFlaggedIds:
+                  - f4e3f09d-3783-49db-80ee-c5f36da8bf41
+        '400':
+          description: Invalid request body or duplicate IDs.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                duplicateIds:
+                  summary: Duplicate policy ID
+                  value:
+                    type: about:blank
+                    title: Invalid request
+                    status: 400
+                    detail: Duplicate policy IDs are not allowed.
+                    instance: /api/v1/policies/flag
+                    code: DUPLICATE_POLICY_IDS
+                    fieldErrors:
+                      - field: policyIds
+                        message: Each policy ID must be unique.
+                    traceId: 4ad9c0a76c2b44a8
+        '404':
+          description: At least one requested policy does not exist; no policies are changed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: about:blank
+                title: Policy not found
+                status: 404
+                detail: One or more requested policy IDs do not exist.
+                instance: /api/v1/policies/flag
+                code: POLICY_IDS_NOT_FOUND
+                missingIds:
+                  - f4e3f09d-3783-49db-80ee-c5f36da8bf41
+                traceId: 4ad9c0a76c2b44a8
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /policies/summary:
+    get:
+      tags: [Policies]
+      operationId: getPolicySummary
+      summary: Get policy summary statistics
+      description: |
+        Calculates statistics across all policies matching the supplied
+        filters. Unlike the list endpoint, summary does not accept pagination
+        or sorting parameters. Status counts include every status, with zero
+        for statuses that have no matching policies. Premium totals are
+        grouped by line of business and currency without currency conversion.
+        expiringSoonCount counts matching policies with expiryDate from the
+        current date through 30 calendar days later, inclusive.
+      parameters:
+        - $ref: '#/components/parameters/Status'
+        - $ref: '#/components/parameters/LineOfBusiness'
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/EffectiveDateFrom'
+        - $ref: '#/components/parameters/EffectiveDateTo'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200':
+          description: Statistics for policies matching the supplied filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicySummary'
+              example:
+                policyCount: 120
+                statusCounts:
+                  Active: 80
+                  Expired: 20
+                  Pending: 15
+                  Cancelled: 5
+                premiumTotalsByLineOfBusinessAndCurrency:
+                  - lineOfBusiness: Property
+                    currency: SGD
+                    totalPremiumAmount: 2500000.00
+                  - lineOfBusiness: Casualty
+                    currency: USD
+                    totalPremiumAmount: 900000.00
+                expiringSoonCount: 7
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Zero-based page index; defaults to 0.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      example: 0
+    Size:
+      name: size
+      in: query
+      required: false
+      description: Number of items per page; defaults to 20 and is capped at 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      example: 20
+    Sort:
+      name: sort
+      in: query
+      required: false
+      description: |
+        Single sort expression in `field,direction` form. Direction is `asc`
+        or `desc`. Defaults to `createdAt,desc`. Supported fields are
+        policyNumber, policyholderName, lineOfBusiness, status, premiumAmount,
+        currency, effectiveDate, expiryDate, region, underwriter,
+        flaggedForReview, createdAt, and updatedAt. The server appends `id,asc`
+        as a stable tie-breaker.
+      schema:
+        type: string
+        pattern: '^(policyNumber|policyholderName|lineOfBusiness|status|premiumAmount|currency|effectiveDate|expiryDate|region|underwriter|flaggedForReview|createdAt|updatedAt),(asc|desc)$'
+        default: createdAt,desc
+      example: premiumAmount,desc
+    Status:
+      name: status
+      in: query
+      required: false
+      description: Exact policy status filter.
+      schema:
+        $ref: '#/components/schemas/PolicyStatus'
+    LineOfBusiness:
+      name: lineOfBusiness
+      in: query
+      required: false
+      description: Exact line-of-business filter.
+      schema:
+        $ref: '#/components/schemas/LineOfBusiness'
+    Region:
+      name: region
+      in: query
+      required: false
+      description: Exact region filter.
+      schema:
+        $ref: '#/components/schemas/Region'
+    EffectiveDateFrom:
+      name: effectiveDateFrom
+      in: query
+      required: false
+      description: Inclusive lower bound for effectiveDate.
+      schema:
+        type: string
+        format: date
+      example: '2026-01-01'
+    EffectiveDateTo:
+      name: effectiveDateTo
+      in: query
+      required: false
+      description: Inclusive upper bound for effectiveDate.
+      schema:
+        type: string
+        format: date
+      example: '2026-12-31'
+    Search:
+      name: search
+      in: query
+      required: false
+      description: Trimmed, case-insensitive substring search across policyNumber, policyholderName, and underwriter. An empty or whitespace-only value applies no search filter.
+      schema:
+        type: string
+      example: lim
+
+  responses:
+    BadRequest:
+      description: Invalid parameter, date range, UUID, or request body.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Invalid request
+            status: 400
+            detail: The request contains one or more invalid parameters.
+            instance: /api/v1/policies
+            code: VALIDATION_ERROR
+            fieldErrors:
+              - field: size
+                message: Must be between 1 and 100.
+            traceId: 4ad9c0a76c2b44a8
+    PolicyNotFound:
+      description: No policy exists with the requested ID.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Policy not found
+            status: 404
+            detail: No policy exists with the requested ID.
+            instance: /api/v1/policies/6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+            code: POLICY_NOT_FOUND
+            traceId: 4ad9c0a76c2b44a8
+    InternalServerError:
+      description: Unexpected server error. Internal implementation details are not exposed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Internal server error
+            status: 500
+            detail: An unexpected error occurred.
+            instance: /api/v1/policies
+            code: INTERNAL_ERROR
+            traceId: 4ad9c0a76c2b44a8
+
+  schemas:
+    Policy:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - policyNumber
+        - policyholderName
+        - lineOfBusiness
+        - status
+        - premiumAmount
+        - currency
+        - effectiveDate
+        - expiryDate
+        - region
+        - underwriter
+        - flaggedForReview
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+        policyNumber:
+          type: string
+          pattern: '^POL-[0-9]{6}$'
+          example: POL-000241
+        policyholderName:
+          type: string
+          example: Lim Wei Ming
+        lineOfBusiness:
+          $ref: '#/components/schemas/LineOfBusiness'
+        status:
+          $ref: '#/components/schemas/PolicyStatus'
+        premiumAmount:
+          type: number
+          minimum: 1000
+          maximum: 5000000
+          multipleOf: 0.01
+          example: 125000.00
+        currency:
+          $ref: '#/components/schemas/Currency'
+        effectiveDate:
+          type: string
+          format: date
+          example: '2026-02-01'
+        expiryDate:
+          type: string
+          format: date
+          example: '2027-01-31'
+        region:
+          $ref: '#/components/schemas/Region'
+        underwriter:
+          type: string
+          example: Aisha Tan
+        flaggedForReview:
+          type: boolean
+          default: false
+          example: false
+        createdAt:
+          type: string
+          format: date-time
+          description: UTC timestamp.
+          example: '2026-01-10T02:15:00Z'
+        updatedAt:
+          type: string
+          format: date-time
+          description: UTC timestamp.
+          example: '2026-01-10T02:15:00Z'
+
+    PolicyPage:
+      type: object
+      additionalProperties: false
+      required: [content, page, size, totalElements, totalPages, sort]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+        page:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        totalElements:
+          type: integer
+          format: int64
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+        sort:
+          $ref: '#/components/schemas/SortOrder'
+
+    SortOrder:
+      type: object
+      additionalProperties: false
+      required: [field, direction]
+      properties:
+        field:
+          type: string
+          example: premiumAmount
+        direction:
+          type: string
+          enum: [asc, desc]
+          example: desc
+
+    FlagPoliciesRequest:
+      type: object
+      additionalProperties: false
+      required: [policyIds]
+      properties:
+        policyIds:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+          example:
+            - 6f3b2cc8-daa2-4c49-8ef2-84d7171504df
+            - f4e3f09d-3783-49db-80ee-c5f36da8bf41
+
+    FlagPoliciesResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - requestedCount
+        - updatedCount
+        - alreadyFlaggedCount
+        - updatedIds
+        - alreadyFlaggedIds
+      properties:
+        requestedCount:
+          type: integer
+          minimum: 0
+          description: Number of unique IDs in the accepted request.
+        updatedCount:
+          type: integer
+          minimum: 0
+          description: Number of policies newly flagged by this request.
+        alreadyFlaggedCount:
+          type: integer
+          minimum: 0
+          description: Number of requested policies that were already flagged.
+        updatedIds:
+          type: array
+          description: IDs of policies newly flagged by this request.
+          items:
+            type: string
+            format: uuid
+        alreadyFlaggedIds:
+          type: array
+          description: IDs of requested policies that were already flagged.
+          items:
+            type: string
+            format: uuid
+
+    PolicySummary:
+      type: object
+      additionalProperties: false
+      required:
+        - policyCount
+        - statusCounts
+        - premiumTotalsByLineOfBusinessAndCurrency
+        - expiringSoonCount
+      properties:
+        policyCount:
+          type: integer
+          format: int64
+          minimum: 0
+        statusCounts:
+          $ref: '#/components/schemas/StatusCounts'
+        premiumTotalsByLineOfBusinessAndCurrency:
+          type: array
+          items:
+            $ref: '#/components/schemas/PremiumTotal'
+        expiringSoonCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Matching policies expiring from the current date through 30 calendar days later, inclusive.
+
+    StatusCounts:
+      type: object
+      additionalProperties: false
+      required: [Active, Expired, Pending, Cancelled]
+      properties:
+        Active:
+          type: integer
+          format: int64
+          minimum: 0
+        Expired:
+          type: integer
+          format: int64
+          minimum: 0
+        Pending:
+          type: integer
+          format: int64
+          minimum: 0
+        Cancelled:
+          type: integer
+          format: int64
+
+    PremiumTotal:
+      type: object
+      additionalProperties: false
+      required: [lineOfBusiness, currency, totalPremiumAmount]
+      properties:
+        lineOfBusiness:
+          $ref: '#/components/schemas/LineOfBusiness'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        totalPremiumAmount:
+          type: number
+          minimum: 0
+          multipleOf: 0.01
+
+    PolicyStatus:
+      type: string
+      enum: [Active, Expired, Pending, Cancelled]
+
+    LineOfBusiness:
+      type: string
+      enum: [Property, Casualty, A&H, Marine]
+
+    Currency:
+      type: string
+      enum: [USD, SGD, HKD, AUD, JPY, THB]
+
+    Region:
+      type: string
+      enum:
+        - Singapore
+        - Hong Kong
+        - Australia
+        - Japan
+        - Thailand
+        - Indonesia
+        - Malaysia
+        - Philippines
+
+    Problem:
+      type: object
+      description: RFC 9457-style problem response with application-specific extensions.
+      required: [type, title, status, detail, instance, code]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          example: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+        code:
+          type: string
+          description: Stable application error code.
+        fieldErrors:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldError'
+        missingIds:
+          type: array
+          description: IDs not found for a rejected all-or-nothing bulk request.
+          items:
+            type: string
+            format: uuid
+        traceId:
+          type: string
+
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
